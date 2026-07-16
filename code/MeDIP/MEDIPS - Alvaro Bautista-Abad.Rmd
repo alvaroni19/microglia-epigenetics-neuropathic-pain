@@ -1,0 +1,1827 @@
+---
+title: "MEDIPS workflow"
+author: "Alvaro Bautista Abad de la Cruz"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    theme: cerulean
+    highlight: tango
+  word_document:
+    toc: true
+  pdf_document:
+    toc: true
+    toc_depth: '4'
+---
+
+# Raw and processed MeDIP-seq data are available from the NCBI Gene Expression Omnibus under Series accession GSE338843.
+
+
+```{r portable-paths, include=FALSE}
+.current_input <- tryCatch(knitr::current_input(dir = TRUE), error = function(e) NULL)
+if (!is.null(.current_input) && nzchar(.current_input)) {
+  SCRIPT_DIR <- dirname(normalizePath(.current_input, winslash = "/", mustWork = FALSE))
+} else {
+  SCRIPT_DIR <- normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+}
+BUNDLE_ROOT <- normalizePath(file.path(SCRIPT_DIR, "..", ".."), winslash = "/", mustWork = FALSE)
+DATA_ROOT <- file.path(BUNDLE_ROOT, "data")
+OUTPUT_ROOT <- file.path(BUNDLE_ROOT, "generated_outputs")
+ANALYSIS_NAME <- basename(SCRIPT_DIR)
+DATA_DIR <- file.path(DATA_ROOT, ANALYSIS_NAME)
+OUTPUT_DIR <- file.path(OUTPUT_ROOT, ANALYSIS_NAME)
+TABLE_DIR <- file.path(DATA_DIR, "workspace_and_tables")
+dir.create(OUTPUT_DIR, recursive = TRUE, showWarnings = FALSE)
+dir.create(TABLE_DIR, recursive = TRUE, showWarnings = FALSE)
+input_file <- function(...) file.path(DATA_DIR, ...)
+output_file <- function(...) file.path(OUTPUT_DIR, ...)
+table_file <- function(...) file.path(TABLE_DIR, ...)
+input_or_output_file <- function(...) {
+  output_path <- output_file(...)
+  if (file.exists(output_path)) output_path else input_file(...)
+}
+knitr::opts_knit$set(root.dir = OUTPUT_DIR)
+RUN_STARTED_AT <- Sys.time()
+```
+```{r setup, include=FALSE}
+knitr_cache_path <- paste0(file.path(OUTPUT_DIR, "knitr_cache_ws400"), "/")
+knitr_fig_path <- paste0(file.path(OUTPUT_DIR, "knitr_figures_ws400"), "/")
+dir.create(knitr_cache_path, showWarnings = FALSE, recursive = TRUE)
+dir.create(knitr_fig_path, showWarnings = FALSE, recursive = TRUE)
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  cache = TRUE,
+  autodep = TRUE,
+  cache.lazy = FALSE,
+  cache.path = knitr_cache_path,
+  fig.path = knitr_fig_path
+)
+
+options(stringsAsFactors = FALSE)
+options(timeout = 600)
+
+# This notebook exports the analysis tables supporting the manuscript figures.
+
+```
+
+## 1. Required packages
+
+```{r check-packages}
+required_pkgs <- c(
+  "BSgenome", "MEDIPS", "BSgenome.Rnorvegicus.UCSC.rn6", "GenomicRanges",
+  "Rsamtools", "rtracklayer", "AnnotationDbi", "S4Vectors", "BiocGenerics",
+  "GenomeInfoDb", "magrittr", "dplyr", "readxl", "writexl",
+  "clusterProfiler", "org.Rn.eg.db", "stringr", "tidyr", "purrr", "tibble"
+)
+
+missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
+
+if (length(missing_pkgs) > 0) {
+  stop(
+    "Missing packages before knitting:\n",
+    paste(missing_pkgs, collapse = ", ")
+  )
+}
+```
+
+# 2. Initial setup
+
+```{r, results= 'hide'}
+library("BSgenome") # Load BSgenome
+library(MEDIPS) # Load MEDIPS
+library(BSgenome.Rnorvegicus.UCSC.rn6) # Load the rat reference genome (rn6)
+library(Rsamtools) # Load Rsamtools for SAM/BAM processing
+```
+
+The following objects store the paths to the BAM files.
+
+> **Note — BAM files are not distributed with this archive.**
+> The coordinate-sorted rn6 BAM/BAI files (~32 GB) are omitted from the Zenodo
+> record because of their size. Obtain them before running this chunk by either
+> (1) downloading the MeDIP-seq FASTQ files from GEO (accession GSE-XXXXXX) and
+> aligning them to UCSC rn6 with HISAT2 v2.1.0 (see the README, "Reproducing the
+> alignment"), or (2) requesting the aligned BAM files from the corresponding
+> author. Place the resulting `.bam`/`.bai` files, keeping the file names used
+> below, under `data/MeDIP/Aligned_Results_BAM/`.
+
+```{r}
+# -----------------------------------------------------------------------------
+# BAM paths
+# -----------------------------------------------------------------------------
+bam_dir <- input_file("Aligned_Results_BAM")
+
+if (!dir.exists(bam_dir)) {
+  stop(
+    "BAM directory not found: ", bam_dir, "\n",
+    "The coordinate-sorted rn6 BAM files are NOT included in the Zenodo archive ",
+    "(~32 GB). Obtain them in one of two ways:\n",
+    "  1. Download the MeDIP-seq FASTQ from GEO (accession GSE-XXXXXX) and align ",
+    "to UCSC rn6 with HISAT2 v2.1.0 (see README, 'Reproducing the alignment'), ",
+    "then place the sorted .bam/.bai files in this folder; or\n",
+    "  2. Request the aligned BAM files from the corresponding author."
+  )
+}
+```
+
+### Female control
+
+```{r, results= 'hide'}
+Female.control.1.bam.file.MeDIP <- file.path(bam_dir, "Female-control-1-IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam")
+Female.control.2.bam.file.MeDIP <- file.path(bam_dir, "Female-control-2-IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam")
+Female.control.3.bam.file.MeDIP <- file.path(bam_dir, "Female-control-3-IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam")
+Female.control.bam.file.Input   <- file.path(bam_dir, "Female-control-input_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam")
+```
+
+### Female CSF1
+
+```{r,  results= 'hide'}
+Female.CSF1.1.bam.file.MeDIP <- file.path(bam_dir, "Female-CSF-1-IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam")
+Female.CSF1.2.bam.file.MeDIP <- file.path(bam_dir, "Female-CSF-2-IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam")
+Female.CSF1.3.bam.file.MeDIP <- file.path(bam_dir, "Female-CSF-3-IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam")
+Female.CSF1.bam.file.Input   <- file.path(bam_dir, "Female-CSF-input_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam")
+```
+
+### Male control
+
+```{r,  results= 'hide'}
+Male.control.1.bam.file.MeDIP <- file.path(bam_dir, "Male-control-1-IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam")
+Male.control.2.bam.file.MeDIP <- file.path(bam_dir, "Male-control-2-IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam")
+Male.control.3.bam.file.MeDIP <- file.path(bam_dir, "Male-control-3-IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam")
+Male.control.bam.file.Input   <- file.path(bam_dir, "Male-control-input_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam")
+```
+
+### Male CSF1
+
+```{r,  results= 'hide'}
+Male.CSF1.1.bam.file.MeDIP <- file.path(bam_dir, "Male-CSF-1-IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam")
+Male.CSF1.2.bam.file.MeDIP <- file.path(bam_dir, "Male-CSF-2-IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam")
+Male.CSF1.3.bam.file.MeDIP <- file.path(bam_dir, "Male-CSF-3-IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam")
+Male.CSF1.bam.file.Input   <- file.path(bam_dir, "Male-CSF-input_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam")
+```
+
+```{r}
+bam_files <- c(
+  Female.control.1.bam.file.MeDIP,
+  Female.control.2.bam.file.MeDIP,
+  Female.control.3.bam.file.MeDIP,
+  Female.control.bam.file.Input,
+  Female.CSF1.1.bam.file.MeDIP,
+  Female.CSF1.2.bam.file.MeDIP,
+  Female.CSF1.3.bam.file.MeDIP,
+  Female.CSF1.bam.file.Input,
+  Male.control.1.bam.file.MeDIP,
+  Male.control.2.bam.file.MeDIP,
+  Male.control.3.bam.file.MeDIP,
+  Male.control.bam.file.Input,
+  Male.CSF1.1.bam.file.MeDIP,
+  Male.CSF1.2.bam.file.MeDIP,
+  Male.CSF1.3.bam.file.MeDIP,
+  Male.CSF1.bam.file.Input
+)
+
+missing_bam_files <- bam_files[!file.exists(bam_files)]
+
+if (length(missing_bam_files) > 0) {
+  stop(
+    "The following BAM files are missing:\n",
+    paste(missing_bam_files, collapse = "\n")
+  )
+} else {
+  message("All BAM files were located successfully.")
+}
+```
+
+
+```{r,  results= 'hide'}
+BSgenome="BSgenome.Rnorvegicus.UCSC.rn6"
+extend=300
+shift=0
+ws=400
+uniq= 1e-3
+chr.select=c("chr1","chr2","chr3","chr4","chr5","chr6","chr7","chr8","chr9","chr10","chr11","chr12","chr13","chr14","chr15","chr16","chr17","chr18","chr19","chr20","chrM","chrY","chrX")
+
+wd <- OUTPUT_DIR # Portable working/output directory
+```
+
+
+# 4. Analysis
+
+### 4.1 Data import and preprocessing
+
+#### MEDIPS
+
+##### Female control
+
+```{r, results= 'hide'}
+# Each condition is assembled from individual animals; samples remain biological replicates.
+Female_Control_MeDIP = MEDIPS.createSet(file = Female.control.1.bam.file.MeDIP, BSgenome = BSgenome, extend = extend, shift = shift, uniq = uniq, window_size = ws, chr.select = chr.select)
+
+Female_Control_MeDIP = c(Female_Control_MeDIP, MEDIPS.createSet(file = Female.control.2.bam.file.MeDIP, BSgenome = BSgenome, extend = extend, shift = shift, uniq = uniq, window_size = ws, chr.select = chr.select))
+
+Female_Control_MeDIP = c(Female_Control_MeDIP, MEDIPS.createSet(file = Female.control.3.bam.file.MeDIP, BSgenome = BSgenome, extend = extend, shift = shift, uniq = uniq, window_size = ws, chr.select = chr.select))
+```
+
+##### Female CSF
+
+```{r, results= 'hide'}
+Female_CSF_MeDIP = MEDIPS.createSet(file = Female.CSF1.1.bam.file.MeDIP, BSgenome = BSgenome, extend = extend, shift = shift, uniq = uniq, window_size = ws, chr.select = chr.select)
+
+Female_CSF_MeDIP = c(Female_CSF_MeDIP, MEDIPS.createSet(file = Female.CSF1.2.bam.file.MeDIP, BSgenome = BSgenome, extend = extend, shift = shift, uniq = uniq, window_size = ws, chr.select = chr.select))
+
+Female_CSF_MeDIP = c(Female_CSF_MeDIP, MEDIPS.createSet(file = Female.CSF1.3.bam.file.MeDIP, BSgenome = BSgenome, extend = extend, shift = shift, uniq = uniq, window_size = ws, chr.select = chr.select))
+```
+
+##### Male control
+
+```{r,  results= 'hide'}
+Male_Control_MeDIP = MEDIPS.createSet(file = Male.control.1.bam.file.MeDIP, BSgenome = BSgenome, extend = extend, shift = shift, uniq = uniq, window_size = ws, chr.select = chr.select)
+
+Male_Control_MeDIP = c(Male_Control_MeDIP, MEDIPS.createSet(file = Male.control.2.bam.file.MeDIP, BSgenome = BSgenome, extend = extend, shift = shift, uniq = uniq, window_size = ws, chr.select = chr.select))
+
+Male_Control_MeDIP = c(Male_Control_MeDIP, MEDIPS.createSet(file = Male.control.3.bam.file.MeDIP, BSgenome = BSgenome, extend = extend, shift = shift, uniq = uniq, window_size = ws, chr.select = chr.select))
+```
+
+##### Male CSF
+
+```{r,  results= 'hide'}
+Male_CSF_MeDIP = MEDIPS.createSet(file = Male.CSF1.1.bam.file.MeDIP, BSgenome = BSgenome, extend = extend, shift = shift, uniq = uniq, window_size = ws, chr.select = chr.select)
+
+Male_CSF_MeDIP = c(Male_CSF_MeDIP, MEDIPS.createSet(file = Male.CSF1.2.bam.file.MeDIP, BSgenome = BSgenome, extend = extend, shift = shift, uniq = uniq, window_size = ws, chr.select = chr.select))
+
+Male_CSF_MeDIP = c(Male_CSF_MeDIP, MEDIPS.createSet(file = Male.CSF1.3.bam.file.MeDIP, BSgenome = BSgenome, extend = extend, shift = shift, uniq = uniq, window_size = ws, chr.select = chr.select))
+```
+
+#### INPUTS
+
+```{r,  results= 'hide'}
+# Input DNA is used as the control set for MeDIP normalization.
+Female_control_Input = MEDIPS.createSet(file = Female.control.bam.file.Input, BSgenome = BSgenome, extend = extend, shift = shift, uniq = uniq, window_size = ws, chr.select = chr.select)
+
+Female_CSF_Input = MEDIPS.createSet(file = Female.CSF1.bam.file.Input, BSgenome = BSgenome, extend = extend, shift = shift, uniq = uniq, window_size = ws, chr.select = chr.select)
+
+Male_control_Input = MEDIPS.createSet(file = Male.control.bam.file.Input, BSgenome = BSgenome, extend = extend, shift = shift, uniq = uniq, window_size = ws, chr.select = chr.select)
+
+Male_CSF_Input = MEDIPS.createSet(file = Male.CSF1.bam.file.Input, BSgenome = BSgenome, extend = extend, shift = shift, uniq = uniq, window_size = ws, chr.select = chr.select)
+```
+
+#### Normalization (CG dinucleotide content)
+
+```{r,  results= 'hide'}
+CS_Male = MEDIPS.couplingVector(pattern = "CG", refObj = Male_Control_MeDIP) # Reference control object for CG-content calculation.
+```
+
+```{r,  results= 'hide'}
+# The coupling vector depends only on genome coordinates and window size.
+# All MEDIPS sets use rn6, the same chromosomes, and 400-bp windows.
+CS_Female = CS_Male
+```
+
+```{r,  results= 'hide'}
+CS_Male_CSF = CS_Male
+```
+
+### 4.2 Differential coverage and methylation profiles
+
+#### Female CSF1 vs Female control
+
+```{r,  results= 'hide'}
+Female_csf_vs_Female_control_mr.edgeR = MEDIPS.meth(MSet1 = Female_CSF_MeDIP, MSet2 = Female_Control_MeDIP, CSet = CS_Female, ISet1 = Female_CSF_Input, ISet2 = Female_control_Input, p.adj = "none", diff.method = "edgeR", MeDIP = T, CNV = T, minRowSum = 10)
+```
+
+#### Male CSF1 vs Male control
+
+```{r,  results= 'hide'}
+Male_csf_vs_Male_control_mr.edgeR = MEDIPS.meth(MSet1 = Male_CSF_MeDIP, MSet2 = Male_Control_MeDIP, CSet = CS_Male, ISet1 = Male_CSF_Input, ISet2 = Male_control_Input, p.adj = "none", diff.method = "edgeR", MeDIP = T, CNV = T, minRowSum = 10)
+```
+
+#### Female control vs Male control
+
+```{r,  results= 'hide'}
+Female_control_vs_Male_control_mr.edgeR = MEDIPS.meth(MSet1 = Female_Control_MeDIP, MSet2 = Male_Control_MeDIP, CSet = CS_Male, ISet1 = Female_control_Input, ISet2 = Male_control_Input, p.adj = "none", diff.method = "edgeR", MeDIP = T, CNV = T, minRowSum = 10)
+```
+
+#### Female CSF vs Male CSF
+
+```{r,  results= 'hide'}
+Female_csf_vs_Male_csf_mr.edgeR = MEDIPS.meth(MSet1 = Female_CSF_MeDIP, MSet2 = Male_CSF_MeDIP, CSet = CS_Male_CSF, ISet1 = Female_CSF_Input, ISet2 = Male_CSF_Input, p.adj = "none", diff.method = "edgeR", MeDIP = T, CNV = T, minRowSum = 10)
+```
+
+
+#### Female CSF1 vs Female control
+
+```{r}
+Female_csf_vs_Female_control_mr.edgeR.s = MEDIPS.selectSig(results = Female_csf_vs_Female_control_mr.edgeR, p.value = 0.05, adj = F, ratio = 2, bg.counts = 5, CNV = T)
+```
+
+#### Male CSF1 vs Male control
+
+```{r}
+Male_csf_vs_Male_control_mr.edgeR.s = MEDIPS.selectSig(results = Male_csf_vs_Male_control_mr.edgeR, p.value = 0.05, adj = F, ratio = 2, bg.counts = 5, CNV = T)
+```
+
+#### Female control vs Male control
+
+```{r}
+Female_control_vs_Male_control_mr.edgeR.s = MEDIPS.selectSig(results = Female_control_vs_Male_control_mr.edgeR, p.value = 0.05, adj = F, ratio = 2, bg.counts = 5, CNV = T)
+```
+
+#### Female CSF vs Male CSF
+
+```{r}
+Female_csf_vs_Male_csf_mr.edgeR.s = MEDIPS.selectSig(results = Female_csf_vs_Male_csf_mr.edgeR, p.value = 0.05, adj = F, ratio = 2, bg.counts = 5, CNV = T)
+```
+
+# 5. Postprocess
+
+```{r, results= 'hide'}
+library(magrittr)
+library(dplyr)
+library(clusterProfiler)
+library(org.Rn.eg.db)
+```
+
+```{r, results= 'hide'}
+source(file.path(SCRIPT_DIR, "rn6_annotation.R"))
+rn6_gtf <- input_file(
+  "annotations", "rn6", "Rattus_norvegicus.Rnor_6.0.104.gtf.gz"
+)
+assert_rn6_bam_headers(bam_files, BSgenome.Rnorvegicus.UCSC.rn6)
+rn6_annotation <- build_rn6_medips_annotations(rn6_gtf, org.Rn.eg.db)
+anno.mart.TSS <- rn6_annotation$annotations$TSS
+anno.mart.EXON <- rn6_annotation$annotations$EXON
+anno.mart.GENE <- rn6_annotation$annotations$GENE
+
+# Export the rn6 Csf1r locus plus 3 kb of flanking context for the Figure 2d
+# CpG-density track. This keeps the figure generator independent of live genome
+# services while preserving the exact assembly used by MEDIPS.
+csf1r_context_start <- 56414488L - 3000L
+csf1r_context_stop <- 56458300L + 3000L
+csf1r_context <- Biostrings::DNAStringSet(Biostrings::subseq(
+  BSgenome.Rnorvegicus.UCSC.rn6::Rnorvegicus[["chr18"]],
+  start = csf1r_context_start,
+  end = csf1r_context_stop
+))
+names(csf1r_context) <- paste0(
+  "rn6_chr18:", csf1r_context_start, "-", csf1r_context_stop
+)
+Biostrings::writeXStringSet(
+  csf1r_context,
+  filepath = table_file("csf1r_context_rn6.fasta"),
+  format = "fasta"
+)
+annotation_information <- rn6_annotation$information
+```
+
+```{r}
+annotate_windows <- function(regions, anno, region_type, cols_sel,
+                             fc_thresh = 0.5, pval_thresh = 0.05) {
+  obj <- MEDIPS.setAnnotation(regions = regions, annotation = anno)
+  obj$diffexpressed <- "NO"
+  obj$diffexpressed[obj$edgeR.logFC > fc_thresh & obj$edgeR.p.value < pval_thresh] <- "Hyper"
+  obj$diffexpressed[obj$edgeR.logFC < -fc_thresh & obj$edgeR.p.value < pval_thresh] <- "Hypo"
+  obj$delabel <- NA
+  obj$delabel[obj$diffexpressed != "NO"] <- obj$diffexpressed[obj$diffexpressed != "NO"]
+  df <- obj[, cols_sel]
+  df <- df[!is.na(df$`1_id`), ]
+  df$ID <- as.character(df$`1_id`)
+  gene_info <- annotation_information[[region_type]]
+  gene_info <- gene_info[!duplicated(gene_info$ID), , drop = FALSE]
+  df <- df %>%
+    left_join(gene_info, by = "ID") %>%
+    arrange(ID)
+  df
+}
+```
+
+```{r}
+cols_sel_FC_FCSF <- c(
+  "chr", "start", "stop", "CF",       
+  "Female.control.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Female.control.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Female.control.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Female.CSF.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Female.CSF.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Female.CSF.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Female.control.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Female.control.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Female.control.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Female.CSF.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Female.CSF.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Female.CSF.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Female.control.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Female.control.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Female.control.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Female.CSF.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Female.CSF.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Female.CSF.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Female.control.input_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Female.CSF.input_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Female.control.input_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Female.CSF.input_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "MSets1.counts.mean",
+  "MSets1.rpkm.mean",
+  "MSets1.rms.mean",
+  "MSets2.counts.mean",
+  "MSets2.rpkm.mean",
+  "MSets2.rms.mean",
+  "edgeR.logFC",
+  "edgeR.logCPM",
+  "edgeR.p.value",
+  "edgeR.adj.p.value",
+  "CNV.log2.ratio",
+  "1_id",
+  "diffexpressed",
+  "delabel"
+  ) 
+```
+
+```{r}
+cols_sel_MC_MCSF <- c(
+  "chr", "start", "stop", "CF",       
+  "Male.control.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Male.control.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Male.control.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Male.CSF.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Male.CSF.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Male.CSF.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Male.control.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Male.control.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Male.control.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Male.CSF.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Male.CSF.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Male.CSF.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Male.control.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Male.control.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Male.control.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Male.CSF.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Male.CSF.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Male.CSF.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Male.control.input_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Male.CSF.input_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Male.control.input_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Male.CSF.input_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "MSets1.counts.mean",
+  "MSets1.rpkm.mean",
+  "MSets1.rms.mean",
+  "MSets2.counts.mean",
+  "MSets2.rpkm.mean",
+  "MSets2.rms.mean",
+  "edgeR.logFC",
+  "edgeR.logCPM",
+  "edgeR.p.value",
+  "edgeR.adj.p.value",
+  "CNV.log2.ratio",
+  "1_id",
+  "diffexpressed",
+  "delabel"
+  ) 
+```
+
+```{r}
+cols_sel_FC_MC <- c(
+  "chr", "start", "stop", "CF",       
+  "Female.control.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Female.control.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Female.control.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Male.control.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Male.control.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Male.control.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Female.control.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Female.control.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Female.control.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Male.control.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Male.control.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Male.control.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Female.control.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Female.control.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Female.control.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Male.control.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Male.control.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Male.control.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Female.control.input_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Male.control.input_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Female.control.input_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Male.control.input_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "MSets1.counts.mean",
+  "MSets1.rpkm.mean",
+  "MSets1.rms.mean",
+  "MSets2.counts.mean",
+  "MSets2.rpkm.mean",
+  "MSets2.rms.mean",
+  "edgeR.logFC",
+  "edgeR.logCPM",
+  "edgeR.p.value",
+  "edgeR.adj.p.value",
+  "CNV.log2.ratio",
+  "1_id",
+  "diffexpressed",
+  "delabel"
+  ) 
+```
+
+```{r}
+cols_sel_FCSF_MCSF <- c(
+  "chr", "start", "stop", "CF",       
+  "Female.CSF.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Female.CSF.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Female.CSF.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Male.CSF.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Male.CSF.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Male.CSF.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.counts",
+  "Female.CSF.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Female.CSF.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Female.CSF.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Male.CSF.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Male.CSF.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Male.CSF.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rpkm",
+  "Female.CSF.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Female.CSF.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Female.CSF.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Male.CSF.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Male.CSF.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "Male.CSF.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms",
+  "MSets1.counts.mean",
+  "MSets1.rpkm.mean",
+  "MSets1.rms.mean",
+  "MSets2.counts.mean",
+  "MSets2.rpkm.mean",
+  "MSets2.rms.mean",
+  "edgeR.logFC",
+  "edgeR.logCPM",
+  "edgeR.p.value",
+  "edgeR.adj.p.value",
+  "CNV.log2.ratio",
+  "1_id",
+  "diffexpressed",
+  "delabel"
+  ) 
+```
+
+```{r}
+# 1. Female CSF1 vs Female control
+F_CSF_vs_F_C_TSS  <- annotate_windows(
+  regions   = Female_csf_vs_Female_control_mr.edgeR.s,
+  anno      = anno.mart.TSS,
+  region_type = "TSS",
+  cols_sel  = cols_sel_FC_FCSF
+)
+F_CSF_vs_F_C_EXON <- annotate_windows(
+  regions   = Female_csf_vs_Female_control_mr.edgeR.s,
+  anno      = anno.mart.EXON,
+  region_type = "EXON",
+  cols_sel  = cols_sel_FC_FCSF
+)
+F_CSF_vs_F_C_GENE <- annotate_windows(
+  regions   = Female_csf_vs_Female_control_mr.edgeR.s,
+  anno      = anno.mart.GENE,
+  region_type = "GENE",
+  cols_sel  = cols_sel_FC_FCSF
+)
+
+# 2. Male CSF1 vs Male control
+M_CSF_vs_M_C_TSS  <- annotate_windows(
+  regions   = Male_csf_vs_Male_control_mr.edgeR.s,
+  anno      = anno.mart.TSS,
+  region_type = "TSS",
+  cols_sel  = cols_sel_MC_MCSF
+)
+M_CSF_vs_M_C_EXON <- annotate_windows(
+  regions   = Male_csf_vs_Male_control_mr.edgeR.s,
+  anno      = anno.mart.EXON,
+  region_type = "EXON",
+  cols_sel  = cols_sel_MC_MCSF
+)
+M_CSF_vs_M_C_GENE <- annotate_windows(
+  regions   = Male_csf_vs_Male_control_mr.edgeR.s,
+  anno      = anno.mart.GENE,
+  region_type = "GENE",
+  cols_sel  = cols_sel_MC_MCSF
+)
+
+# 3. Female control vs Male control
+F_C_vs_M_C_TSS  <- annotate_windows(
+  regions   = Female_control_vs_Male_control_mr.edgeR.s,
+  anno      = anno.mart.TSS,
+  region_type = "TSS",
+  cols_sel  = cols_sel_FC_MC
+)
+F_C_vs_M_C_EXON <- annotate_windows(
+  regions   = Female_control_vs_Male_control_mr.edgeR.s,
+  anno      = anno.mart.EXON,
+  region_type = "EXON",
+  cols_sel  = cols_sel_FC_MC
+)
+F_C_vs_M_C_GENE <- annotate_windows(
+  regions   = Female_control_vs_Male_control_mr.edgeR.s,
+  anno      = anno.mart.GENE,
+  region_type = "GENE",
+  cols_sel  = cols_sel_FC_MC
+)
+
+# 4. Female CSF vs Male CSF
+F_CSF_vs_M_CSF_TSS  <- annotate_windows(
+  regions   = Female_csf_vs_Male_csf_mr.edgeR.s,
+  anno      = anno.mart.TSS,
+  region_type = "TSS",
+  cols_sel  = cols_sel_FCSF_MCSF
+)
+F_CSF_vs_M_CSF_EXON <- annotate_windows(
+  regions   = Female_csf_vs_Male_csf_mr.edgeR.s,
+  anno      = anno.mart.EXON,
+  region_type = "EXON",
+  cols_sel  = cols_sel_FCSF_MCSF
+)
+F_CSF_vs_M_CSF_GENE <- annotate_windows(
+  regions   = Female_csf_vs_Male_csf_mr.edgeR.s,
+  anno      = anno.mart.GENE,
+  region_type = "GENE",
+  cols_sel  = cols_sel_FCSF_MCSF
+)
+```
+
+```{r}
+library(dplyr)
+library(purrr)
+library(stringr)
+library(tibble)
+
+df_names <- c(
+  "F_CSF_vs_F_C_EXON",  "F_CSF_vs_F_C_TSS",  "F_CSF_vs_F_C_GENE",
+  "F_C_vs_M_C_EXON",    "F_C_vs_M_C_TSS",    "F_C_vs_M_C_GENE",
+  "M_CSF_vs_M_C_EXON",  "M_CSF_vs_M_C_TSS",  "M_CSF_vs_M_C_GENE",
+  "F_CSF_vs_M_CSF_EXON","F_CSF_vs_M_CSF_TSS","F_CSF_vs_M_CSF_GENE"
+)
+genes_total <- map_dfr(df_names, function(name) {
+  df <- as_tibble(get(name))
+  
+  cols_needed <- c(
+    "external_transcript_name", "external_gene_name",
+    "transcript_biotype",       "gene_biotype"
+  )
+  for(col in setdiff(cols_needed, names(df))) {
+    df[[col]] <- NA_character_
+  }
+  
+  comparison <- str_remove(name, "_[^_]+$")
+  region     <- str_extract(name, "[^_]+$")
+  
+  df %>%
+    dplyr::mutate(
+      external_transcript_gene_name = dplyr::coalesce(
+        external_transcript_name, external_gene_name
+      ),
+      transcript_gene_biotype       = dplyr::coalesce(
+        transcript_biotype, gene_biotype
+      ),
+      comparison = comparison,
+      region     = region
+    ) %>%
+    dplyr::select(
+      dplyr::everything(),
+      -dplyr::any_of(c(
+        "external_transcript_name", "external_gene_name",
+        "transcript_biotype",       "gene_biotype",
+        "ISets2.counts.mean",       "ISets2.rpkm.mean"
+      ))
+    )
+})
+
+GENES_TOTAL <- genes_total %>%
+  dplyr::mutate(
+    transcript_gene_biotype = factor(transcript_gene_biotype),
+    description             = factor(description)
+  )
+```
+
+
+
+```{r}
+library(dplyr)
+GENES_TOTAL_sig_contig_colap <- GENES_TOTAL %>%
+  dplyr::mutate(
+    chr   = as.character(chr),
+    start = as.integer(start),
+    stop  = as.integer(stop)
+  ) %>%
+  dplyr::filter(
+    diffexpressed %in% c("Hyper", "Hypo"),
+    !is.na(description),
+    edgeR.p.value < 0.05,
+    abs(edgeR.logFC) > 1
+  ) %>%
+
+  # ---------------------------------------------------------------------------
+  # Discard gene-region-comparison groups with inconsistent methylation direction.
+  dplyr::group_by(comparison, region, external_transcript_gene_name) %>%
+  dplyr::filter(dplyr::n_distinct(diffexpressed) == 1) %>%
+  dplyr::ungroup()
+```
+
+```{r export-significant-gene-rms-matrix}
+sample_metadata <- tibble::tribble(
+  ~sample_col, ~group, ~sex, ~condition, ~replicate, ~sample_label,
+  "Female.control.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms", "FC", "F", "Control", 1L, "FC_1",
+  "Female.control.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms", "FC", "F", "Control", 2L, "FC_2",
+  "Female.control.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms", "FC", "F", "Control", 3L, "FC_3",
+  "Female.CSF.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms", "FCSF1", "F", "CSF1", 1L, "FCSF1_1",
+  "Female.CSF.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms", "FCSF1", "F", "CSF1", 2L, "FCSF1_2",
+  "Female.CSF.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms", "FCSF1", "F", "CSF1", 3L, "FCSF1_3",
+  "Male.control.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms", "MC", "M", "Control", 1L, "MC_1",
+  "Male.control.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms", "MC", "M", "Control", 2L, "MC_2",
+  "Male.control.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms", "MC", "M", "Control", 3L, "MC_3",
+  "Male.CSF.1.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms", "MCSF1", "M", "CSF1", 1L, "MCSF1_1",
+  "Male.CSF.2.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms", "MCSF1", "M", "CSF1", 2L, "MCSF1_2",
+  "Male.CSF.3.IP_Rattus_norvegicus_RN6_hisat2_alignment_sort.bam.rms", "MCSF1", "M", "CSF1", 3L, "MCSF1_3"
+)
+if (!all(sample_metadata$sample_col %in% names(GENES_TOTAL))) {
+  stop("The annotated MEDIPS table is missing one or more sample RMS columns.")
+}
+
+safe_mean <- function(values) {
+  if (all(is.na(values))) NA_real_ else mean(values, na.rm = TRUE)
+}
+significant_genes <- unique(stats::na.omit(
+  as.character(GENES_TOTAL_sig_contig_colap$external_transcript_gene_name)
+))
+window_rms <- GENES_TOTAL %>%
+  dplyr::filter(external_transcript_gene_name %in% significant_genes) %>%
+  dplyr::group_by(external_transcript_gene_name, chr, start, stop) %>%
+  dplyr::summarise(
+    dplyr::across(dplyr::all_of(sample_metadata$sample_col), safe_mean),
+    .groups = "drop"
+  )
+significant_gene_rms <- window_rms %>%
+  dplyr::group_by(external_transcript_gene_name) %>%
+  dplyr::summarise(
+    dplyr::across(dplyr::all_of(sample_metadata$sample_col), safe_mean),
+    .groups = "drop"
+  )
+names(significant_gene_rms) <- c("gene", sample_metadata$sample_label)
+utils::write.csv(
+  significant_gene_rms,
+  table_file("significant_gene_rms_matrix_ws400.csv"),
+  row.names = FALSE,
+  na = ""
+)
+utils::write.csv(
+  sample_metadata,
+  table_file("medip_sample_metadata.csv"),
+  row.names = FALSE
+)
+```
+
+## 6. GO enrichment
+
+```{r}
+library(dplyr)
+library(clusterProfiler)
+library(org.Rn.eg.db)
+
+combinations <- GENES_TOTAL_sig_contig_colap %>%
+  distinct(comparison, region)
+
+go_results_list <- list()
+ontologies <- c("BP", "MF", "CC")
+directions <- c("Hyper", "Hypo")
+
+for (i in seq_len(nrow(combinations))) {
+  comp <- combinations$comparison[i]
+  reg  <- combinations$region[i]
+
+  for (direction in directions) {
+    df_base <- GENES_TOTAL_sig_contig_colap %>%
+      filter(comparison == comp,
+             region     == reg)
+
+    if (direction == "Hyper") {
+      df_filt <- df_base %>%
+        filter(edgeR.p.value < 0.05,
+               edgeR.logFC   >  1,
+               transcript_gene_biotype == "protein_coding")
+    } else {
+      df_filt <- df_base %>%
+        filter(edgeR.p.value < 0.05,
+               edgeR.logFC   < -1,
+               transcript_gene_biotype == "protein_coding")
+    }
+
+    if (reg == "GENE") {
+      gene_ids_raw <- as.character(df_filt$ID)
+      gene_ids <- gene_ids_raw[grepl("^ENSRNOG", gene_ids_raw)]
+      keyType  <- "ENSEMBL"
+      
+    } else if (reg == "TSS") {
+      gene_ids_raw <- as.character(df_filt$ID)
+      gene_ids     <- gene_ids_raw[grepl("^ENSRNOT", gene_ids_raw)]
+      keyType      <- "ENSEMBLTRANS"
+      
+    } else if (reg == "EXON") {
+      gene_ids <- as.character(df_filt$external_transcript_gene_name)
+      keyType  <- "SYMBOL"
+      
+    } else {
+      gene_ids <- as.character(df_filt$ID)
+      keyType  <- "ENSEMBL"
+    }
+
+    gene_ids <- unique(na.omit(gene_ids))
+    if (length(gene_ids) == 0) {
+      message("No mapped genes for ", comp, " | ", reg, " | ", direction)
+      next
+    }
+
+    for (ont in ontologies) {
+      go_res <- enrichGO(gene          = gene_ids,
+                         OrgDb         = org.Rn.eg.db,
+                         keyType       = keyType,
+                         ont           = ont,
+                         readable      = TRUE,
+                         pAdjustMethod = "none",
+                         qvalueCutoff  = 1,
+                         pvalueCutoff  = 0.05)
+
+      df_go <- as.data.frame(go_res)
+      if (!is.null(go_res) && nrow(df_go) > 0) {
+        key <- paste(comp, reg, direction, ont, sep = "_")
+        go_results_list[[key]] <- list(go = go_res)
+      } else {
+        message("No GO results for ", comp, " | ", reg, " | ", direction, " | ", ont)
+      }
+    }
+  }
+}
+
+```
+
+```{r}
+# Use qualified dplyr calls to keep data transformations explicit.
+library(dplyr)
+library(writexl)
+
+write_xlsx(
+  GENES_TOTAL_sig_contig_colap,
+  table_file("GENES_TOTAL_sig_contig_colap_ws400.xlsx")
+)
+```
+
+```{r}
+combine_go_results_from_list <- function(go_list) {
+  out_list <- list()
+
+  for (nm in names(go_list)) {
+    parts <- strsplit(nm, "_")[[1]]
+    n <- length(parts)
+
+    if (n < 4) {
+      warning("The name does not follow the expected pattern: ", nm)
+      next
+    }
+
+    comparison <- paste(parts[1:(n - 3)], collapse = "_")
+    region <- parts[n - 2]
+    direction <- parts[n - 1]
+    ontology <- parts[n]
+    res_df <- go_list[[nm]]$go@result
+    res_df$comparison <- comparison
+    res_df$region <- region
+    res_df$direction <- direction
+    res_df$ontology <- ontology
+    out_list[[nm]] <- res_df
+  }
+
+  bind_rows(out_list)
+}
+
+go_results_filtered <- combine_go_results_from_list(go_results_list) %>%
+  dplyr::filter(pvalue < 0.05) %>%
+  dplyr::mutate(
+    p_value = pvalue,
+    multiple_testing_adjustment = "none"
+  )
+if ("geneID" %in% colnames(go_results_filtered)) {
+  go_results_filtered$geneID <- gsub("/", ", ", go_results_filtered$geneID)
+}
+```
+
+```{r go-thematic-summary-and-ranking-ws400}
+# GO thematic summary and relevance distribution for 400-bp windows.
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(writexl)
+  library(purrr)
+  library(tibble)
+})
+
+# -----------------------------------------------------------------------------
+# 1) Editable dictionary of biological themes
+# -----------------------------------------------------------------------------
+go_theme_dictionary <- tibble::tribble(
+  ~biological_theme, ~pattern,
+  "Morphology", "morpho|cell shape|cell projection|process extension|neurite|dendrite|axon|morphogenesis|cytoskelet|actin|microtubule|tubulin|branch",
+  "Inflammation / neuroinflammation", "inflam|neuroinflam|immune|microglia|\\bcytokine\\b|interleukin|tnf|nf-kb|complement|toll-like|phagocyt|chemokine",
+  "Sex hormones / estrogen", "steroid|estrogen|androgen|hormone|estradiol|progesterone|testosterone|gonadal|\\bsex\\b|aromatase|estrous",
+  "Mechanical stimulus / pain", "mechani|mechanosens|\\bpain\\b|nocicepti|touch|somatosensory|sensory stimulus|allodynia"
+)
+
+comparison_map <- tibble::tribble(
+  ~comparison, ~comparison_label, ~facet_order,
+  "F_C_vs_M_C", "GO F vs M", 1L,
+  "F_CSF_vs_F_C", "GO F CSF1 vs F C", 2L,
+  "M_CSF_vs_M_C", "GO M CSF1 vs M C", 3L
+)
+
+direction_levels <- c("Hyper", "Hypo")
+theme_levels <- go_theme_dictionary$biological_theme
+
+# -----------------------------------------------------------------------------
+# 2) Build master GO table from existing objects
+# -----------------------------------------------------------------------------
+if (!exists("go_results_filtered")) {
+  stop("Object 'go_results_filtered' not found. Run the GO enrichment section first.")
+}
+
+go_from_main <- go_results_filtered %>%
+  dplyr::transmute(
+    comparison = as.character(comparison),
+    direction = as.character(direction),
+    region = as.character(region),
+    Description = as.character(Description),
+    p_value = suppressWarnings(as.numeric(pvalue)),
+    Count = suppressWarnings(as.numeric(Count)),
+    ontology = as.character(ontology),
+    geneID = as.character(geneID)
+  ) %>%
+  dplyr::filter(comparison %in% c("F_C_vs_M_C", "F_CSF_vs_F_C", "M_CSF_vs_M_C"))
+
+go_master_84b <- go_from_main %>%
+  dplyr::filter(
+    !is.na(Description), Description != "",
+    !is.na(direction), direction %in% direction_levels
+  ) %>%
+  dplyr::left_join(comparison_map, by = "comparison") %>%
+  dplyr::filter(!is.na(comparison_label)) %>%
+  dplyr::mutate(
+    p_value = suppressWarnings(as.numeric(p_value)),
+    Count = suppressWarnings(as.numeric(Count)),
+    neglog10_pvalue = -log10(pmax(p_value, 1e-300)),
+    go_term_key = paste(region, ontology, Description, sep = " | ")
+  )
+
+# Diagnostic for missing comparison-direction combinations.
+diag_comp_84b <- tidyr::expand_grid(
+  comparison = comparison_map$comparison,
+  direction = direction_levels
+) %>%
+  dplyr::left_join(
+    go_master_84b %>% dplyr::count(comparison, direction, name = "n_rows"),
+    by = c("comparison", "direction")
+  ) %>%
+  dplyr::mutate(n_rows = dplyr::coalesce(n_rows, 0L)) %>%
+  dplyr::arrange(comparison, direction)
+
+print(diag_comp_84b)
+
+# -----------------------------------------------------------------------------
+# 3) Theme matching helpers
+# -----------------------------------------------------------------------------
+match_go_themes_long <- function(df, dict_tbl) {
+  purrr::map_dfr(seq_len(nrow(dict_tbl)), function(i) {
+    th <- dict_tbl$biological_theme[i]
+    patt <- dict_tbl$pattern[i]
+    df %>%
+      dplyr::filter(stringr::str_detect(Description, stringr::regex(patt, ignore_case = TRUE))) %>%
+      dplyr::mutate(biological_theme = th)
+  }) %>%
+    dplyr::distinct(
+      comparison, comparison_label, facet_order, direction, region, ontology,
+      Description, p_value, Count, neglog10_pvalue, go_term_key, biological_theme,
+      .keep_all = FALSE
+    )
+}
+
+assign_primary_theme <- function(df, dict_tbl) {
+  primary_theme <- purrr::map_chr(df$Description, function(desc_i) {
+    matches <- dict_tbl$biological_theme[
+      purrr::map_lgl(dict_tbl$pattern, ~ stringr::str_detect(desc_i, stringr::regex(.x, ignore_case = TRUE)))
+    ]
+    if (length(matches) == 0) "Other" else matches[[1]]
+  })
+  df %>% dplyr::mutate(biological_theme = primary_theme)
+}
+
+go_interest_long_84b <- match_go_themes_long(go_master_84b, go_theme_dictionary)
+
+go_rank_table_84b <- assign_primary_theme(go_master_84b, go_theme_dictionary) %>%
+  dplyr::group_by(comparison, comparison_label, facet_order, direction) %>%
+  dplyr::arrange(dplyr::desc(neglog10_pvalue), dplyr::desc(Count), Description, .by_group = TRUE) %>%
+  dplyr::mutate(rank_within_group = dplyr::row_number()) %>%
+  dplyr::ungroup()
+
+# -----------------------------------------------------------------------------
+# Ranking/distribution by relevance
+# Ranking metric = -log10(unadjusted p value), descending.
+# Ranked scatter is chosen over a plain histogram because it preserves location
+# of terms of interest across the full relevance order.
+# -----------------------------------------------------------------------------
+go_rank_export_84b <- go_rank_table_84b %>%
+  dplyr::mutate(
+    comparison_label = factor(comparison_label, levels = comparison_map$comparison_label),
+    direction = factor(direction, levels = direction_levels),
+    biological_theme = factor(biological_theme, levels = c(theme_levels, "Other"))
+  ) %>%
+  dplyr::select(
+    comparison,
+    comparison_label,
+    direction,
+    region,
+    Description,
+    p_value,
+    neglog10_pvalue,
+    Count,
+    biological_theme,
+    rank_within_group,
+    ontology,
+    geneID
+  ) %>%
+  dplyr::arrange(comparison_label, direction, rank_within_group)
+
+write_xlsx(
+  go_rank_export_84b,
+  path = table_file("GO_relevance_rank_distribution_ws400.xlsx")
+)
+message("[OK] GO_relevance_rank_distribution_ws400.xlsx saved")
+
+# The final figure code uses GO_relevance_rank_distribution_ws400.xlsx only.
+```
+
+```{r candidate-gene-aliases}
+# =============================================================================
+# Table 1: manually curated aliases
+# For each gene/family of interest, define a canonical name and
+# symbols to search in external_transcript_gene_name.
+# =============================================================================
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(writexl)
+})
+
+gene_aliases <- tibble::tribble(
+  ~family,        ~symbol,     ~notes,
+  "CSF1R",        "Csf1r",     "Colony stimulating factor 1 receptor",
+  "Aromatase",    "Cyp19a1",   "Cytochrome P450 19A1",
+  "ERs",          "Esr1",      "Estrogen receptor 1",
+  "ERs",          "Esr2",      "Estrogen receptor 2",
+  "ERs",          "Gper1",     "G protein-coupled estrogen receptor 1",
+  "Dnmts",        "Dnmt1",     "DNA methyltransferase 1",
+  "Dnmts",        "Dnmt3a",    "DNA methyltransferase 3A",
+  "Dnmts",        "Dnmt3b",    "DNA methyltransferase 3B",
+  "Gadds",        "Gadd45a",   "Growth arrest / DNA damage inducible alpha",
+  "Gadds",        "Gadd45b",   "Growth arrest / DNA damage inducible beta",
+  "Gadds",        "Gadd45g",   "Growth arrest / DNA damage inducible gamma",
+  "TNFa",         "Tnf",       "Tumor necrosis factor (nomenclatura rata)",
+  "IL10",         "Il10",      "Interleukin 10",
+  "Bdnf",         "Bdnf",      "Brain-derived neurotrophic factor",
+  "IRF",          "Irf1",      "Interferon regulatory factor 1",
+  "IRF",          "Irf2",      "Interferon regulatory factor 2",
+  "IRF",          "Irf3",      "Interferon regulatory factor 3",
+  "IRF",          "Irf4",      "Interferon regulatory factor 4",
+  "IRF",          "Irf5",      "Interferon regulatory factor 5",
+  "IRF",          "Irf6",      "Interferon regulatory factor 6",
+  "IRF",          "Irf7",      "Interferon regulatory factor 7",
+  "IRF",          "Irf8",      "Interferon regulatory factor 8",
+  "IRF",          "Irf9",      "Interferon regulatory factor 9",
+  "PU.1",         "Spi1",      "SPI1 / PU.1 transcription factor"
+)
+
+# Display alias table
+message("=== Alias table (", nrow(gene_aliases), " symbols across ",
+        n_distinct(gene_aliases$family), " families) ===")
+print(gene_aliases)
+
+```
+
+
+```{r candidate-gene-search}
+# =============================================================================
+# Table 2: dataset matches
+# Search each symbol in GENES_TOTAL (primary source: 400-bp windows with
+# genomic coordinates, including non-significant windows).
+# GENES_TOTAL_sig_contig_colap is used as the secondary summary.
+# =============================================================================
+
+symbols_to_search <- tolower(gene_aliases$symbol)
+
+# --- Search GENES_TOTAL (primary, higher-resolution source) ---
+gene_hits_full <- GENES_TOTAL %>%
+  dplyr::filter(
+    tolower(external_transcript_gene_name) %in% symbols_to_search
+  ) %>%
+  dplyr::left_join(
+    gene_aliases %>% dplyr::mutate(symbol_lower = tolower(symbol)),
+    by = c("external_transcript_gene_name" = "symbol")
+  )
+
+# --- Search GENES_TOTAL_sig_contig_colap (significant rows only) ---
+gene_hits_sig <- GENES_TOTAL_sig_contig_colap %>%
+  dplyr::filter(
+    tolower(external_transcript_gene_name) %in% symbols_to_search
+  ) %>%
+  dplyr::left_join(
+    gene_aliases %>% dplyr::mutate(symbol_lower = tolower(symbol)),
+    by = c("external_transcript_gene_name" = "symbol")
+  )
+
+# --- Summary of detected and undetected symbols ---
+found_symbols <- unique(tolower(gene_hits_full$external_transcript_gene_name))
+found_sig_symbols <- unique(tolower(gene_hits_sig$external_transcript_gene_name))
+
+status_table <- gene_aliases %>%
+  dplyr::mutate(
+    found_in_GENES_TOTAL = tolower(symbol) %in% found_symbols,
+    found_significant = tolower(symbol) %in% found_sig_symbols,
+    n_windows_total = purrr::map_int(tolower(symbol), function(s) {
+      sum(tolower(GENES_TOTAL$external_transcript_gene_name) == s, na.rm = TRUE)
+    }),
+    n_windows_sig = purrr::map_int(tolower(symbol), function(s) {
+      sum(tolower(GENES_TOTAL_sig_contig_colap$external_transcript_gene_name) == s, na.rm = TRUE)
+    })
+  )
+
+message("\n=== Candidate-gene search status ===")
+message("Found in GENES_TOTAL: ",
+        sum(status_table$found_in_GENES_TOTAL), "/", nrow(status_table))
+message("With significant changes: ",
+        sum(status_table$found_significant), "/", nrow(status_table))
+not_found <- status_table %>% dplyr::filter(!found_in_GENES_TOTAL)
+if (nrow(not_found) > 0) {
+  message("\nGenes not found in the dataset:")
+  for (i in seq_len(nrow(not_found))) {
+    message("  - ", not_found$family[i], " (", not_found$symbol[i], ")")
+  }
+}
+
+print(status_table %>% dplyr::select(family, symbol, found_in_GENES_TOTAL,
+                                      found_significant, n_windows_total, n_windows_sig))
+```
+
+
+```{r candidate-gene-hits-export}
+# =============================================================================
+# Export window-level match table
+# =============================================================================
+
+if (nrow(gene_hits_full) > 0) {
+  hits_export <- gene_hits_full %>%
+    dplyr::select(
+      family, symbol = external_transcript_gene_name,
+      comparison, region, chr, start, stop,
+      edgeR.logFC, edgeR.p.value, edgeR.logCPM,
+      CNV.log2.ratio, diffexpressed
+    ) %>%
+    dplyr::arrange(family, symbol, comparison, region, chr, start)
+
+  write_xlsx(
+    hits_export,
+    path = table_file("methylation_map_candidate_genes_hits_ws400.xlsx")
+  )
+  message("[OK] methylation_map_candidate_genes_hits_ws400.xlsx: ",
+          nrow(hits_export), " windows")
+
+  # Reproduce the row and column orders used by the final Python heatmap.
+  heatmap_gene_comp <- GENES_TOTAL_sig_contig_colap %>%
+    dplyr::mutate(
+      gene = as.character(external_transcript_gene_name),
+      gene_lower = tolower(gene),
+      comparison = as.character(comparison),
+      edgeR.logFC = suppressWarnings(as.numeric(edgeR.logFC)),
+      diffexpressed = as.character(diffexpressed)
+    ) %>%
+    dplyr::filter(
+      diffexpressed %in% c("Hyper", "Hypo"),
+      gene_lower %in% tolower(gene_aliases$symbol),
+      !is.na(gene), gene != "", !is.na(comparison), !is.na(edgeR.logFC)
+    ) %>%
+    dplyr::group_by(gene, comparison) %>%
+    dplyr::summarise(gene_logFC = mean(edgeR.logFC), .groups = "drop") %>%
+    tidyr::pivot_wider(names_from = comparison, values_from = gene_logFC, values_fill = 0)
+
+  heatmap_matrix <- as.matrix(
+    heatmap_gene_comp[, setdiff(names(heatmap_gene_comp), "gene"), drop = FALSE]
+  )
+  rownames(heatmap_matrix) <- heatmap_gene_comp$gene
+  variable_rows <- apply(heatmap_matrix, 1, stats::var) > 0
+  heatmap_matrix <- heatmap_matrix[variable_rows, , drop = FALSE]
+
+  correlation_order <- function(matrix_input, rows = TRUE) {
+    if ((rows && nrow(matrix_input) < 2) || (!rows && ncol(matrix_input) < 2)) {
+      return(if (rows) seq_len(nrow(matrix_input)) else seq_len(ncol(matrix_input)))
+    }
+    correlation_matrix <- if (rows) {
+      suppressWarnings(stats::cor(t(matrix_input), use = "pairwise.complete.obs"))
+    } else {
+      suppressWarnings(stats::cor(matrix_input, use = "pairwise.complete.obs"))
+    }
+    correlation_matrix[!is.finite(correlation_matrix)] <- 0
+    diag(correlation_matrix) <- 1
+    stats::hclust(stats::as.dist(1 - correlation_matrix), method = "average")$order
+  }
+
+  scaled_heatmap_matrix <- t(scale(t(heatmap_matrix)))
+  scaled_heatmap_matrix[!is.finite(scaled_heatmap_matrix)] <- 0
+  row_order <- correlation_order(scaled_heatmap_matrix, rows = TRUE)
+  column_order <- correlation_order(scaled_heatmap_matrix, rows = FALSE)
+
+  write_xlsx(
+    list(
+      row_order = tibble::tibble(
+        row_id = rownames(scaled_heatmap_matrix)[row_order],
+        order = seq_along(row_order)
+      ),
+      column_order = tibble::tibble(
+        column_id = colnames(scaled_heatmap_matrix)[column_order],
+        order = seq_along(column_order)
+      )
+    ),
+    path = table_file("heatmap_candidate_genes_logFC_ws400_orders.xlsx")
+  )
+  message("[OK] heatmap_candidate_genes_logFC_ws400_orders.xlsx saved")
+} else {
+  message("[!] No candidate-gene windows were found in GENES_TOTAL")
+}
+```
+
+```{r ere-motif-scan-ws400, fig.width=14, fig.height=9}
+# =============================================================================
+# ERE motif scan
+# Exports motif matches, candidate windows and scan diagnostics.
+# =============================================================================
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(purrr)
+  library(tibble)
+  library(writexl)
+  library(GenomicRanges)
+})
+
+# Excel cannot store cells longer than 32,767 characters. GO tables can
+# accumulate long gene/term lists; to retain traceability this workflow
+# saves a complete RDS and a readable XLSX with truncated cells.
+# -----------------------------------------------------------------------------
+# A) ERE motif scan in candidate-gene DMRs
+# -----------------------------------------------------------------------------
+
+ere_candidate_genes <- tibble::tribble(
+  ~family,        ~symbol,   ~notes,
+  "CSF1R",        "Csf1r",   "Colony stimulating factor 1 receptor",
+  "Aromatase",    "Cyp19a1", "Cytochrome P450 19A1 / aromatase",
+  "ERs",          "Esr1",    "Estrogen receptor 1",
+  "ERs",          "Esr2",    "Estrogen receptor 2",
+  "ERs",          "Gper1",   "G protein-coupled estrogen receptor 1",
+  "Dnmts",        "Dnmt1",   "DNA methyltransferase 1",
+  "Dnmts",        "Dnmt3a",  "DNA methyltransferase 3A",
+  "Dnmts",        "Dnmt3b",  "DNA methyltransferase 3B",
+  "Gadds",        "Gadd45a", "Growth arrest / DNA damage inducible alpha",
+  "Gadds",        "Gadd45b", "Growth arrest / DNA damage inducible beta",
+  "Gadds",        "Gadd45g", "Growth arrest / DNA damage inducible gamma",
+  "TNFa",         "Tnf",     "Tumor necrosis factor",
+  "IL10",         "Il10",    "Interleukin 10",
+  "Bdnf",         "Bdnf",    "Brain-derived neurotrophic factor",
+  "IRF",          "Irf1",    "Interferon regulatory factor 1",
+  "IRF",          "Irf2",    "Interferon regulatory factor 2",
+  "IRF",          "Irf3",    "Interferon regulatory factor 3",
+  "IRF",          "Irf4",    "Interferon regulatory factor 4",
+  "IRF",          "Irf5",    "Interferon regulatory factor 5",
+  "IRF",          "Irf6",    "Interferon regulatory factor 6",
+  "IRF",          "Irf7",    "Interferon regulatory factor 7",
+  "IRF",          "Irf8",    "Interferon regulatory factor 8",
+  "IRF",          "Irf9",    "Interferon regulatory factor 9",
+  "PU.1",         "Spi1",    "SPI1 / PU.1 transcription factor"
+) %>%
+  dplyr::mutate(symbol_lower = tolower(symbol))
+
+# ERE motif definitions used in the exact genomic-sequence scan.
+# canonical_full_15bp: conservative full ERE, AGGTCA + 3 nt + TGACCT.
+
+ere_motif_definitions <- tibble::tribble(
+  ~motif_name,              ~motif_class,                         ~regex,                    ~strand_label, ~interpretation,
+  "canonical_full_15bp",    "canonical_full_ERE",                 "AGGTCA[ACGT]{3}TGACCT",   "both",        "Exact full ERE palindrome; conservative",
+  "canonical_core_13bp",    "canonical_core_ERE",                 "GGTCA[ACGT]{3}TGACC",     "both",        "Exact 13 bp core ERE; conservative but slightly shorter",
+  "half_site_AGGTCA",       "half_site_exact_exploratory",        "AGGTCA",                  "+",           "Exact ER half-site; exploratory",
+  "half_site_TGACCT",       "half_site_exact_exploratory",        "TGACCT",                  "-",           "Exact reverse-complement half-site; exploratory"
+)
+
+region_to_biological_label <- function(x) {
+  dplyr::case_when(
+    x == "GENE" ~ "GENEBODY",
+    TRUE ~ as.character(x)
+  )
+}
+
+select_ere_dmr_source <- function() {
+  candidates <- c("GENES_TOTAL_sig_contig_colap", "GENES_TOTAL")
+  for (nm in candidates) {
+    if (!exists(nm, inherits = TRUE)) next
+    obj <- get(nm, inherits = TRUE)
+    if (!is.data.frame(obj)) next
+    required <- c(
+      "comparison", "region", "external_transcript_gene_name",
+      "diffexpressed", "chr", "start", "stop", "edgeR.logFC",
+      "edgeR.p.value"
+    )
+    if (all(required %in% names(obj))) {
+      return(list(source_name = nm, data = tibble::as_tibble(obj)))
+    }
+  }
+  list(source_name = NA_character_, data = tibble::tibble())
+}
+
+get_rn6_genome_or_null <- function() {
+  if (!requireNamespace("BSgenome.Rnorvegicus.UCSC.rn6", quietly = TRUE)) {
+    return(NULL)
+  }
+  suppressPackageStartupMessages(library(BSgenome.Rnorvegicus.UCSC.rn6))
+  if (exists("Rnorvegicus", inherits = TRUE)) {
+    return(get("Rnorvegicus", inherits = TRUE))
+  }
+  NULL
+}
+
+normalise_seqname <- function(chr, available_seqlevels) {
+  chr <- as.character(chr)
+  if (is.na(chr) || chr == "") return(NA_character_)
+  if (chr %in% available_seqlevels) return(chr)
+  chr_prefixed <- paste0("chr", chr)
+  if (chr_prefixed %in% available_seqlevels) return(chr_prefixed)
+  if (chr %in% c("M", "MT", "chrMT") && "chrM" %in% available_seqlevels) return("chrM")
+  NA_character_
+}
+
+extract_sequences_vectorized <- function(chr, start, stop, genome_obj) {
+  n <- length(chr)
+  out <- rep(NA_character_, n)
+  if (is.null(genome_obj) || n == 0) return(out)
+
+  available <- seqnames(genome_obj)
+  chr_ok <- vapply(chr, normalise_seqname, character(1), available_seqlevels = available)
+  start <- suppressWarnings(as.integer(start))
+  stop <- suppressWarnings(as.integer(stop))
+
+  valid <- !is.na(chr_ok) & !is.na(start) & !is.na(stop) & start <= stop
+  if (!any(valid)) return(out)
+
+  idx <- which(valid)
+  seqlen <- seqlengths(genome_obj)[chr_ok[idx]]
+  starts <- pmax(1L, start[idx])
+  stops <- pmin(stop[idx], as.integer(seqlen))
+  keep <- starts <= stops
+  if (!any(keep)) return(out)
+
+  idx <- idx[keep]
+  gr <- GenomicRanges::GRanges(
+    seqnames = chr_ok[idx],
+    ranges = IRanges::IRanges(start = starts[keep], end = stops[keep])
+  )
+
+  out[idx] <- tryCatch(
+    as.character(BSgenome::getSeq(genome_obj, gr)),
+    error = function(e) {
+      message("[DIAGNOSTIC] Vectorized getSeq failed: ", e$message)
+      rep(NA_character_, length(idx))
+    }
+  )
+
+  out
+}
+
+locate_regex_matches <- function(sequence, motif_tbl = ere_motif_definitions) {
+  if (is.na(sequence) || sequence == "") {
+    return(tibble::tibble())
+  }
+  sequence <- toupper(sequence)
+
+  purrr::map_dfr(seq_len(nrow(motif_tbl)), function(i) {
+    patt <- motif_tbl$regex[i]
+    hits <- gregexpr(patt, sequence, perl = TRUE, ignore.case = TRUE)[[1]]
+    if (length(hits) == 1 && hits[1] == -1) return(tibble::tibble())
+
+    match_len <- attr(hits, "match.length")
+    tibble::tibble(
+      motif_name = motif_tbl$motif_name[i],
+      motif_class = motif_tbl$motif_class[i],
+      motif_regex = patt,
+      motif_strand = motif_tbl$strand_label[i],
+      motif_start_in_window = as.integer(hits),
+      motif_end_in_window = as.integer(hits + match_len - 1L),
+      motif_sequence = substr(sequence, hits, hits + match_len - 1L)
+    )
+  })
+}
+
+ere_source <- select_ere_dmr_source()
+ere_genome <- get_rn6_genome_or_null()
+
+ere_scan_diagnostic <- tibble::tibble(
+  item = c(
+    "source_object",
+    "genome_available",
+    "motif_strategy",
+    "canonical_full_definition",
+    "canonical_core_definition",
+    "half_site_definition",
+    "ERE_folder"
+  ),
+  value = c(
+    as.character(ere_source$source_name),
+    as.character(!is.null(ere_genome)),
+    "Exact regex scan on genomic windows; no mismatch-tolerant PWM threshold used",
+    "AGGTCA[ACGT]{3}TGACCT",
+    "GGTCA[ACGT]{3}TGACC",
+    "Exact AGGTCA / TGACCT only; exploratory, not interpreted as sufficient evidence",
+    normalizePath(input_file("ERE"), winslash = "/", mustWork = FALSE)
+  )
+)
+
+if (nrow(ere_source$data) == 0) {
+  ere_scan_table <- tibble::tibble(
+    diagnostic = "No suitable DMR/window object with comparison, region, gene symbol and coordinates was found."
+  )
+  writexl::write_xlsx(
+    list(
+      ERE_scan = ere_scan_table,
+      diagnostic = ere_scan_diagnostic,
+      motif_definitions = ere_motif_definitions,
+      candidate_genes = ere_candidate_genes
+    ),
+    path = table_file("DMR_candidate_genes_ERE_scan_ws400.xlsx")
+  )
+  message("[DIAGNOSTIC] ERE scan not run: no source object with coordinates is available.")
+} else {
+  dmr_candidate_windows <- ere_source$data %>%
+    dplyr::mutate(
+      ere_row_id = dplyr::row_number(),
+      gene_symbol = as.character(external_transcript_gene_name),
+      symbol_lower = tolower(gene_symbol),
+      comparison = as.character(comparison),
+      region = as.character(region),
+      region_biological = region_to_biological_label(region),
+      diffexpressed = as.character(diffexpressed),
+      methylation_direction = dplyr::case_when(
+        diffexpressed == "Hyper" ~ "HYPER",
+        diffexpressed == "Hypo" ~ "HYPO",
+        TRUE ~ as.character(diffexpressed)
+      ),
+      chr = as.character(chr),
+      start = suppressWarnings(as.integer(start)),
+      stop = suppressWarnings(as.integer(stop))
+    ) %>%
+    dplyr::filter(diffexpressed %in% c("Hyper", "Hypo")) %>%
+    dplyr::inner_join(
+      ere_candidate_genes %>% dplyr::select(family, symbol, symbol_lower, notes),
+      by = "symbol_lower"
+    ) %>%
+    dplyr::arrange(family, symbol, comparison, region, chr, start) %>%
+    dplyr::distinct(
+      family, symbol, comparison, region, chr, start, stop,
+      edgeR.logFC, edgeR.p.value, .keep_all = TRUE
+    ) %>%
+    dplyr::mutate(ere_row_id = dplyr::row_number())
+
+  if (nrow(dmr_candidate_windows) == 0) {
+    ere_scan_table <- tibble::tibble(
+      diagnostic = "No significant DMR/window rows were found for the requested candidate genes.",
+      source_object = ere_source$source_name
+    )
+    writexl::write_xlsx(
+      list(
+        ERE_scan = ere_scan_table,
+        diagnostic = ere_scan_diagnostic,
+        motif_definitions = ere_motif_definitions,
+        candidate_genes = ere_candidate_genes
+      ),
+      path = table_file("DMR_candidate_genes_ERE_scan_ws400.xlsx")
+    )
+    message("[DIAGNOSTIC] ERE scan found no candidate-gene matches in significant DMRs.")
+  } else {
+    dmr_candidate_windows <- dmr_candidate_windows %>%
+      dplyr::mutate(
+        coordinate_status = dplyr::case_when(
+          is.na(chr) | is.na(start) | is.na(stop) ~ "missing_coordinates",
+          is.null(ere_genome) ~ "BSgenome_Rnorvegicus_rn6_not_available",
+          TRUE ~ "coordinates_available"
+        )
+      )
+
+    dmr_candidate_windows$sequence_full <- extract_sequences_vectorized(
+      dmr_candidate_windows$chr,
+      dmr_candidate_windows$start,
+      dmr_candidate_windows$stop,
+      ere_genome
+    )
+
+    csf1r_windows <- dmr_candidate_windows %>%
+      dplyr::filter(
+        tolower(symbol) == "csf1r",
+        !is.na(sequence_full),
+        sequence_full != ""
+      ) %>%
+      dplyr::distinct(chr, start, stop, sequence_full)
+    if (nrow(csf1r_windows) == 0) {
+      stop("No rn6 DMR windows overlap the rn6 Csf1r annotation.")
+    }
+    fasta_lines <- unlist(
+      Map(
+        function(chr, start, stop, sequence) {
+          c(paste0(">", chr, ":", start, "-", stop), sequence)
+        },
+        csf1r_windows$chr,
+        csf1r_windows$start,
+        csf1r_windows$stop,
+        csf1r_windows$sequence_full
+      ),
+      use.names = FALSE
+    )
+    writeLines(fasta_lines, table_file("csf1r_dmr_windows_rn6.fasta"))
+
+    motif_hits_long <- purrr::map2_dfr(
+      dmr_candidate_windows$ere_row_id,
+      dmr_candidate_windows$sequence_full,
+      function(row_id, seq_i) {
+        locate_regex_matches(seq_i) %>%
+          dplyr::mutate(ere_row_id = row_id)
+      }
+    )
+
+    if (nrow(motif_hits_long) == 0) {
+      motif_hits_long <- tibble::tibble(
+        ere_row_id = integer(),
+        motif_name = character(),
+        motif_class = character(),
+        motif_regex = character(),
+        motif_strand = character(),
+        motif_start_in_window = integer(),
+        motif_end_in_window = integer(),
+        motif_sequence = character(),
+        chr = character(),
+        motif_genomic_start = integer(),
+        motif_genomic_stop = integer()
+      )
+
+      motif_summary <- tibble::tibble(
+        ere_row_id = integer(),
+        has_ERE_full_15bp = logical(),
+        has_ERE_core_13bp = logical(),
+        has_ERE_canonical = logical(),
+        has_ERE_half_site_exact = logical(),
+        n_ERE_full_15bp = integer(),
+        n_ERE_core_13bp = integer(),
+        n_ERE_half_site_exact = integer(),
+        motif_positions_in_window = character(),
+        motif_positions_genomic = character(),
+        motif_sequences = character()
+      )
+    } else {
+      motif_hits_long <- motif_hits_long %>%
+        dplyr::left_join(
+          dmr_candidate_windows %>% dplyr::select(ere_row_id, chr, window_start = start),
+          by = "ere_row_id"
+        ) %>%
+        dplyr::mutate(
+          motif_genomic_start = window_start + motif_start_in_window - 1L,
+          motif_genomic_stop = window_start + motif_end_in_window - 1L
+        ) %>%
+        dplyr::select(-window_start)
+
+      motif_summary <- motif_hits_long %>%
+        dplyr::group_by(ere_row_id) %>%
+        dplyr::summarise(
+          has_ERE_full_15bp = any(motif_name == "canonical_full_15bp"),
+          has_ERE_core_13bp = any(motif_name == "canonical_core_13bp"),
+          has_ERE_canonical = any(motif_class %in% c("canonical_full_ERE", "canonical_core_ERE")),
+          has_ERE_half_site_exact = any(motif_class == "half_site_exact_exploratory"),
+          n_ERE_full_15bp = sum(motif_name == "canonical_full_15bp"),
+          n_ERE_core_13bp = sum(motif_name == "canonical_core_13bp"),
+          n_ERE_half_site_exact = sum(motif_class == "half_site_exact_exploratory"),
+          motif_positions_in_window = paste(
+            paste0(motif_name, ":", motif_start_in_window, "-", motif_end_in_window, "(", motif_strand, ")"),
+            collapse = "; "
+          ),
+          motif_positions_genomic = paste(
+            paste0(chr, ":", motif_genomic_start, "-", motif_genomic_stop, "(", motif_strand, ")"),
+            collapse = "; "
+          ),
+          motif_sequences = paste(unique(motif_sequence), collapse = "; "),
+          .groups = "drop"
+        )
+    }
+
+    ere_scan_table <- dmr_candidate_windows %>%
+      dplyr::left_join(motif_summary, by = "ere_row_id") %>%
+      dplyr::mutate(
+        has_ERE_full_15bp = dplyr::coalesce(has_ERE_full_15bp, FALSE),
+        has_ERE_core_13bp = dplyr::coalesce(has_ERE_core_13bp, FALSE),
+        has_ERE_canonical = dplyr::coalesce(has_ERE_canonical, FALSE),
+        has_ERE_half_site_exact = dplyr::coalesce(has_ERE_half_site_exact, FALSE),
+        n_ERE_full_15bp = dplyr::coalesce(n_ERE_full_15bp, 0L),
+        n_ERE_core_13bp = dplyr::coalesce(n_ERE_core_13bp, 0L),
+        n_ERE_half_site_exact = dplyr::coalesce(n_ERE_half_site_exact, 0L),
+        sequence_status = dplyr::case_when(
+          is.na(sequence_full) ~ "sequence_not_available",
+          TRUE ~ "sequence_extracted"
+        ),
+        sequence_analysed = dplyr::case_when(
+          is.na(sequence_full) ~ NA_character_,
+          nchar(sequence_full) <= 1000 ~ sequence_full,
+          TRUE ~ paste0(substr(sequence_full, 1, 500), "...[truncated_length=", nchar(sequence_full), "]")
+        ),
+        source_object = ere_source$source_name
+      ) %>%
+      dplyr::select(
+        comparison,
+        methylation_direction,
+        gene = symbol,
+        family,
+        region = region_biological,
+        chr,
+        start,
+        stop,
+        edgeR.logFC,
+        edgeR.p.value,
+        edgeR.logCPM,
+        CNV.log2.ratio,
+        sequence_status,
+        coordinate_status,
+        sequence_analysed,
+        has_ERE_full_15bp,
+        has_ERE_core_13bp,
+        has_ERE_canonical,
+        has_ERE_half_site_exact,
+        n_ERE_full_15bp,
+        n_ERE_core_13bp,
+        n_ERE_half_site_exact,
+        motif_positions_in_window,
+        motif_positions_genomic,
+        motif_sequences,
+        source_object
+      )
+
+    ere_missing_diag <- ere_scan_table %>%
+      dplyr::count(sequence_status, coordinate_status, name = "n_windows") %>%
+      dplyr::arrange(sequence_status, coordinate_status)
+
+    # Classify exact motif matches separately from other candidate DMR windows.
+    ere_window_summary_by_gene <- ere_scan_table %>%
+      dplyr::mutate(
+        ERE_status = dplyr::case_when(
+          has_ERE_canonical ~ "Canonical/core ERE",
+          !has_ERE_canonical & has_ERE_half_site_exact ~ "Half-site only",
+          TRUE ~ "No exact ERE"
+        ),
+        ERE_status = factor(
+          ERE_status,
+          levels = c("No exact ERE", "Half-site only", "Canonical/core ERE")
+        )
+      ) %>%
+      dplyr::count(comparison, family, gene, ERE_status, name = "n_windows") %>%
+      dplyr::group_by(comparison, family, gene) %>%
+      tidyr::complete(
+        ERE_status = factor(
+          c("No exact ERE", "Half-site only", "Canonical/core ERE"),
+          levels = c("No exact ERE", "Half-site only", "Canonical/core ERE")
+        ),
+        fill = list(n_windows = 0L)
+      ) %>%
+      dplyr::ungroup() %>%
+      tidyr::pivot_wider(
+        names_from = ERE_status,
+        values_from = n_windows,
+        values_fill = 0
+      ) %>%
+      dplyr::mutate(
+        n_candidate_DMR_windows = `Canonical/core ERE` + `Half-site only` + `No exact ERE`,
+        n_windows_with_exact_motif = `Canonical/core ERE` + `Half-site only`
+      ) %>%
+      dplyr::arrange(comparison, family, gene)
+
+    ere_candidate_gene_status <- ere_candidate_genes %>%
+      dplyr::left_join(
+        ere_scan_table %>%
+          dplyr::group_by(family, gene) %>%
+          dplyr::summarise(
+            n_candidate_DMR_windows = dplyr::n(),
+            n_windows_with_canonical_or_core = sum(has_ERE_canonical, na.rm = TRUE),
+            n_windows_with_half_site_only = sum(!has_ERE_canonical & has_ERE_half_site_exact, na.rm = TRUE),
+            n_windows_no_exact_motif = sum(!has_ERE_canonical & !has_ERE_half_site_exact, na.rm = TRUE),
+            comparisons_with_candidate_DMR = paste(sort(unique(comparison)), collapse = "; "),
+            .groups = "drop"
+          ) %>%
+          dplyr::rename(symbol = gene),
+        by = c("family", "symbol")
+      ) %>%
+      dplyr::mutate(
+        dplyr::across(
+          c(
+            n_candidate_DMR_windows,
+            n_windows_with_canonical_or_core,
+            n_windows_with_half_site_only,
+            n_windows_no_exact_motif
+          ),
+          ~ dplyr::coalesce(.x, 0L)
+        ),
+        ERE_scan_status = dplyr::case_when(
+          n_candidate_DMR_windows == 0 ~ "no_significant_candidate_DMR_window",
+          n_windows_with_canonical_or_core > 0 ~ "candidate_DMR_with_canonical_or_core_ERE",
+          n_windows_with_half_site_only > 0 ~ "candidate_DMR_with_half_site_only",
+          TRUE ~ "candidate_DMR_without_exact_ERE_motif"
+        )
+      ) %>%
+      dplyr::arrange(family, symbol)
+
+    writexl::write_xlsx(
+      list(
+        ERE_scan = ere_scan_table,
+        motif_hits_long = motif_hits_long,
+        ERE_window_summary_by_gene = ere_window_summary_by_gene,
+        ERE_candidate_gene_status = ere_candidate_gene_status,
+        diagnostic = ere_scan_diagnostic,
+        missing_sequence_summary = ere_missing_diag,
+        motif_definitions = ere_motif_definitions,
+        candidate_genes = ere_candidate_genes
+      ),
+      path = table_file("DMR_candidate_genes_ERE_scan_ws400.xlsx")
+    )
+    message("[OK] DMR_candidate_genes_ERE_scan_ws400.xlsx saved")
+
+  }
+}
+```
+
+```{r validate-release-tables}
+required_release_tables <- c(
+  "GENES_TOTAL_sig_contig_colap_ws400.xlsx",
+  "GO_relevance_rank_distribution_ws400.xlsx",
+  "methylation_map_candidate_genes_hits_ws400.xlsx",
+  "heatmap_candidate_genes_logFC_ws400_orders.xlsx",
+  "DMR_candidate_genes_ERE_scan_ws400.xlsx",
+  "significant_gene_rms_matrix_ws400.csv",
+  "medip_sample_metadata.csv",
+  "csf1r_dmr_windows_rn6.fasta",
+  "csf1r_context_rn6.fasta"
+)
+
+required_release_paths <- table_file(required_release_tables)
+missing_release_tables <- required_release_paths[!file.exists(required_release_paths)]
+if (length(missing_release_tables) > 0) {
+  stop(
+    "The MEDIPS run did not generate the following required release tables:\n",
+    paste(missing_release_tables, collapse = "\n")
+  )
+}
+
+release_info <- file.info(required_release_paths)
+stale_release_tables <- rownames(release_info)[
+  is.na(release_info$mtime) |
+    release_info$mtime < (RUN_STARTED_AT - 2) |
+    release_info$size <= 0
+]
+if (length(stale_release_tables) > 0) {
+  stop(
+    "The following release tables were not refreshed during this run:\n",
+    paste(stale_release_tables, collapse = "\n")
+  )
+}
+
+required_sheets <- list(
+  "DMR_candidate_genes_ERE_scan_ws400.xlsx" = c("ERE_scan", "candidate_genes"),
+  "heatmap_candidate_genes_logFC_ws400_orders.xlsx" = c("row_order", "column_order")
+)
+for (workbook_name in names(required_sheets)) {
+  workbook_path <- table_file(workbook_name)
+  missing_sheets <- setdiff(required_sheets[[workbook_name]], readxl::excel_sheets(workbook_path))
+  if (length(missing_sheets) > 0) {
+    stop(
+      "Workbook ", workbook_name, " is missing required sheets: ",
+      paste(missing_sheets, collapse = ", ")
+    )
+  }
+}
+
+message(
+  "[OK] All MEDIPS release tables were regenerated in: ",
+  normalizePath(TABLE_DIR, winslash = "/", mustWork = TRUE)
+)
+```
+
+

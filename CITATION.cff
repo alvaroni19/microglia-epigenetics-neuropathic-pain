@@ -1,0 +1,38 @@
+cff-version: 1.2.0
+message: "If you use this code or data, please cite the archived Zenodo release and the associated article."
+title: "CAM study MeDIP-seq and MorphOMICs reproducibility release"
+version: "1.0.0"
+type: software
+authors:
+  - family-names: "Bautista-Abad"
+    given-names: "Alvaro"
+  - family-names: "Alises"
+    given-names: "Carlos V."
+  - family-names: "Caceres-Pajuelo"
+    given-names: "Julio Eduardo"
+  - family-names: "Ganchala"
+    given-names: "Danny"
+  - family-names: "Martin"
+    given-names: "Yasmina B."
+  - family-names: "Garcia-Segura"
+    given-names: "Luis Miguel"
+  - family-names: "Ulloa Severino"
+    given-names: "Francesco Paolo"
+  - family-names: "Arevalo"
+    given-names: "Maria-Angeles"
+  - family-names: "Avendano"
+    given-names: "Carlos"
+  - family-names: "Negredo"
+    given-names: "Pilar"
+  - family-names: "Grassi"
+    given-names: "Daniela"
+keywords:
+  - "MeDIP-seq"
+  - "MorphOMICs"
+  - "microglia"
+  - "neuropathic pain"
+identifiers:
+  - type: other
+    value: "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE338843"
+    description: "NCBI GEO Series GSE338843"
+
