@@ -41,7 +41,7 @@ FS_PANEL_LETTER = 8.0   # bold panel letter (A, B, ...) drawn by the assembler
 
 # ----------------------------------------------------------------------------- colours
 GREY = "#BDBDBD"            # Control (condition axis)
-CCI = "#D1495B"            # CCI  (the user's "magenta", matches approved figs)
+CCI = "#D1495B"            # CCI 
 CONTROL_DARK = "#7A7A7A"
 
 # MeDIP in-vitro 4-group palette (sex x treatment).
@@ -160,7 +160,7 @@ def _title_case_symbol(s: str) -> str:
 def gene_italic(name: str) -> str:
     """Return a mathtext italic gene symbol in proper rodent Title case.
 
-    Global rules (user spec): Title case + italic; Tnf is displayed as Tnfα.
+    Title case + italic; Tnf is displayed as Tnfα.
     """
     s = _title_case_symbol(gene_symbol(name))
     if s == "Tnf":
@@ -207,8 +207,8 @@ def save_panel(fig, out_base: Path, vector: bool, tiff: bool = True,
       vector=True  -> also write a .pdf (for scatter/line/scheme panels)
       tiff=True    -> write a .tiff at DPI (LZW)  (deliverable / assembly source)
       svg=True     -> write an editable .svg (svg.fonttype='none' -> text stays
-                      text; transparent so panels overlay cleanly when the user
-                      ungroups them in PowerPoint / Illustrator)
+                      text; transparent so panels overlay cleanly when 
+                      ungrouped in PowerPoint / Illustrator)
       preview=True -> write a small .png for visual inspection (cleaned up later)
     `out_base` is a path WITHOUT extension.
     """
