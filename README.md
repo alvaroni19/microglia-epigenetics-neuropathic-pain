@@ -1,6 +1,5 @@
-# CAM study analysis code
+# Study analysis code
 
-This repository contains the custom analysis code associated with the CAM study.
 MeDIP-seq raw and processed sequencing files (FASTQ, WIG) are deposited in GEO
 (Series accession [GSE338843](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE338843)). The MeDIP-seq analysis tables, MorphOMICs intermediate
 data and SWC reconstructions are archived in the associated Zenodo record https://zenodo.org/records/21396206. The
@@ -92,6 +91,3 @@ Run the Csf1r ESR1/ESR2 PWM scan:
 ```text
 python code/_helpers/map_csf1r_esr_motifs_integrated.py
 ```
-
-The MeDIP-seq DMR workflow and exploratory GO over-representation analysis use
-unadjusted p values.
