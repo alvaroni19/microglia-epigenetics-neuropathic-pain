@@ -103,9 +103,9 @@ The following objects store the paths to the BAM files.
 > **Note — BAM files are not distributed with this archive.**
 > The coordinate-sorted rn6 BAM/BAI files (~32 GB) are omitted from the Zenodo
 > record because of their size. Obtain them before running this chunk by either
-> (1) downloading the MeDIP-seq FASTQ files from GEO (accession GSE-XXXXXX) and
-> aligning them to UCSC rn6 with HISAT2 v2.1.0 (see the README, "Reproducing the
-> alignment"), or (2) requesting the aligned BAM files from the corresponding
+> (1) downloading the MeDIP-seq FASTQ files from GEO (accession GSE-GSE338843) and
+> aligning them to UCSC rn6 with HISAT2 v2.1.0 (see the README, "Data layout"),
+> or (2) requesting the aligned BAM files from the corresponding
 > author. Place the resulting `.bam`/`.bai` files, keeping the file names used
 > below, under `data/MeDIP/Aligned_Results_BAM/`.
 
