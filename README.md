@@ -34,8 +34,7 @@ analyses are included in the Zenodo archive.
 - MEDIPS 1.58.0.
 - Python 3.13.5; exact packages are recorded in `requirements-python.txt`.
 
-Package names and versions should be verified against CRAN, Bioconductor or
-PyPI before installation. The R environment can be restored with `renv` and
+The R environment can be restored with `renv` and
 the Python environment with a package manager that respects the pinned
 requirements file.
 
