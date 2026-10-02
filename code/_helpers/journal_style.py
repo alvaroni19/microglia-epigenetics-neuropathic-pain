@@ -8,7 +8,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 # ----------------------------------------------------------------------------- geometry
-# Nature Communications physical sizes with explicit millimetre conversion.
+
 MM_PER_INCH = 25.4
 MM = 1.0 / MM_PER_INCH               # 1 mm in inches
 
@@ -19,16 +19,16 @@ def mm2inch(*values_mm):
     return out[0] if len(out) == 1 else out
 
 
-WIDTH_1COL_MM = 89.0                 # Nature single column
-WIDTH_2COL_MM = 183.0                # Nature double column
+WIDTH_1COL_MM = 89.0                 
+WIDTH_2COL_MM = 183.0               
 WIDTH_1P5COL_MM = 120.0
-MAX_HEIGHT_MM = 247.0                # Nature maximum figure height
+MAX_HEIGHT_MM = 247.0              
 DPI = 600                            # native render dpi (>= 300, no upscaling)
 GUTTER_MM = 4.0                      # space between panels in the assembler
 PAD_IN = 0.05                        # savefig tight pad (<= 0.1 in, per spec)
 
 # ----------------------------------------------------------------------------- fonts (pt)
-# Nature spec: panel letters 8 pt bold; axis titles & legends 7 pt; ticks 5 pt.
+# panel letters 8 pt bold; axis titles & legends 7 pt; ticks 5 pt.
 # In-plot text is floored at 7 pt.
 FS_TICK = 5.0
 FS_AXIS = 7.0
