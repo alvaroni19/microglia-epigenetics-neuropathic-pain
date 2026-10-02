@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 SCRIPT_DIR  = Path(__file__).resolve().parent
 BUNDLE_ROOT = SCRIPT_DIR.parent.parent
 sys.path.append(str(BUNDLE_ROOT / "code" / "_helpers"))
-import nature_style as ns  # noqa: E402
+import journal_style as ns  # noqa: E402
 from violin_style import draw_violin  # noqa: E402
 ns.set_style()
 # Fixed publication font sizes used throughout this panel.
