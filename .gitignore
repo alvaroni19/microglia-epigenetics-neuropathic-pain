@@ -1,0 +1,15 @@
+data/
+generated_outputs/
+metadata/
+__pycache__/
+*.py[cod]
+.Rhistory
+.Rproj.user/
+.venv/
+*.html
+*.docx
+*.pdf
+*.png
+*.svg
+*.tiff
+

@@ -1,0 +1,47 @@
+cff-version: 1.2.0
+message: "If you use this code or data, please cite this archive."
+title: "microglia-epigenetics-neuropathic-pain: analysis code and data"
+version: "2.0.0"
+date-released: "2026-10-20"
+type: software
+doi: "10.5281/zenodo.21396205"
+license: MIT
+repository-code: "https://github.com/alvaroni19/microglia-epigenetics-neuropathic-pain"
+authors:
+  - family-names: "Bautista-Abad"
+    given-names: "Alvaro"
+  - family-names: "Alises"
+    given-names: "Carlos V."
+  - family-names: "Caceres-Pajuelo"
+    given-names: "Julio Eduardo"
+  - family-names: "Ganchala"
+    given-names: "Danny"
+  - family-names: "Martin"
+    given-names: "Yasmina B."
+  - family-names: "Garcia-Segura"
+    given-names: "Luis Miguel"
+  - family-names: "Ulloa Severino"
+    given-names: "Francesco Paolo"
+  - family-names: "Arevalo"
+    given-names: "Maria-Angeles"
+  - family-names: "Avendano"
+    given-names: "Carlos"
+  - family-names: "Negredo"
+    given-names: "Pilar"
+  - family-names: "Grassi"
+    given-names: "Daniela"
+keywords:
+  - "MeDIP-seq"
+  - "DNA methylation"
+  - "microglia"
+  - "MorphOMICs"
+  - "RT-qPCR"
+  - "estrous cycle"
+  - "trigeminal nerve injury"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.21396205"
+    description: "Zenodo concept DOI (resolves to the latest version)"
+  - type: url
+    value: "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE338843"
+    description: "NCBI GEO Series GSE338843 (MeDIP-seq FASTQ and WIG files)"
